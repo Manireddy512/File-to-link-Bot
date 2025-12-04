@@ -1,66 +1,67 @@
+from flask import Flask, request
+import requests
 import os
-from flask import Flask, request, send_from_directory
-from telegram import Bot, Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
-import asyncio
-import time
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://your-render-domain.onrender.com/webhook
 
 app = Flask(__name__)
-bot = Bot(BOT_TOKEN)
 
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+FILE_API = f"https://api.telegram.org/file/bot{BOT_TOKEN}"
 
-# ---------------- BOT HANDLERS ----------------
-
-async def start(update: Update, context):
-    await update.message.reply_text("Send me any file and I will give a download link valid for 7 days.")
-
-async def handle_file(update: Update, context):
-    file = update.message.document or update.message.photo[-1] or update.message.video
-
-    tg_file = await bot.get_file(file.file_id)
-
-    filename = f"{int(time.time())}_{file.file_unique_id}"
-    filepath = os.path.join(UPLOAD_DIR, filename)
-
-    await tg_file.download_to_drive(filepath)
-
-    file_url = f"{request.url_root}download/{filename}"
-
-    await update.message.reply_text(f"Your download link:\n{file_url}\n\nValid for 7 days.")
-
-application = Application.builder().token(BOT_TOKEN).build()
-application.add_handler(CommandHandler("start", start))
-application.add_handler(MessageHandler(filters.ALL & (~filters.COMMAND), handle_file))
-
-# ---------------- FLASK ROUTES ----------------
+@app.route("/", methods=["GET"])
+def home():
+    return "Bot is running!"
 
 @app.route("/webhook", methods=["POST"])
-async def webhook():
-    update = Update.de_json(request.json, bot)
-    await application.process_update(update)
+def webhook():
+    data = request.get_json()
+
+    if "message" not in data:
+        return "ok"
+
+    message = data["message"]
+    chat_id = message["chat"]["id"]
+
+    # Start command
+    if "text" in message and message["text"] == "/start":
+        send_message(chat_id, "Send me any file and I will give you a direct download link.")
+        return "ok"
+
+    # If file is sent
+    file_id = None
+    if "document" in message:
+        file_id = message["document"]["file_id"]
+    elif "video" in message:
+        file_id = message["video"]["file_id"]
+    elif "audio" in message:
+        file_id = message["audio"]["file_id"]
+    elif "photo" in message:
+        file_id = message["photo"][-1]["file_id"]  # highest resolution
+
+    if file_id:
+        file_path = get_file_path(file_id)
+        if file_path:
+            download_link = f"{FILE_API}/{file_path}"
+            send_message(chat_id, f"Here is your file link (valid for at least 1 week):\n\n{download_link}")
+        else:
+            send_message(chat_id, "Failed to retrieve the file path.")
+    
     return "ok"
 
-@app.route("/download/<path:filename>")
-def download(filename):
-    return send_from_directory(UPLOAD_DIR, filename, as_attachment=True)
 
-@app.route("/")
-def home():
-    return "Bot is running"
+def send_message(chat_id, text):
+    url = f"{BASE_URL}/sendMessage"
+    requests.post(url, json={"chat_id": chat_id, "text": text})
 
-# ---------------- STARTUP WEBHOOK SETTER ----------------
 
-@app.before_request
-def setup_webhook_once():
-    if not hasattr(app, "webhook_set"):
-        asyncio.get_event_loop().create_task(bot.set_webhook(url=WEBHOOK_URL + "/webhook"))
-        app.webhook_set = True
+def get_file_path(file_id):
+    url = f"{BASE_URL}/getFile?file_id={file_id}"
+    response = requests.get(url).json()
+    try:
+        return response["result"]["file_path"]
+    except:
+        return None
 
-# Export Flask app for Gunicorn
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    app.run(host="0.0.0.0", port=10000)
