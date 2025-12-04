@@ -1,79 +1,60 @@
 import os
-from flask import Flask, request, send_from_directory
+from flask import Flask, request
 from telegram import Update
-from telegram.ext import Application, ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
-import asyncio
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
-BOT_TOKEN = "8346484698:AAEZWFCCPUbnNksHUSkOP7CuQeaAke5YenE"
-BOT_USERNAME = "file_to_link_mine_bot"  # without @
-UPLOAD_DIR = "uploads"
-
-if not os.path.exists(UPLOAD_DIR):
-    os.makedirs(UPLOAD_DIR)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Example: https://your-app.onrender.com/webhook
 
 app = Flask(__name__)
-
-# ===========================
-#  Serve Uploaded Files
-# ===========================
-@app.route("/file/<path:filename>")
-def serve_file(filename):
-    return send_from_directory(UPLOAD_DIR, filename, as_attachment=True)
+telegram_app = Application.builder().token(BOT_TOKEN).build()
 
 
-# ===========================
-#  Telegram Webhook Handler
-# ===========================
-telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
+async def start(update: Update, context):
+    await update.message.reply_text("Send me any file and I will give you a download link!")
 
 
-async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
+async def handle_file(update: Update, context):
+    file_obj = None
 
-    file_obj = (
-        message.document or
-        (message.photo[-1] if message.photo else None) or
-        message.video
-    )
+    if update.message.document:
+        file_obj = update.message.document
+    elif update.message.photo:
+        file_obj = update.message.photo[-1]
+    elif update.message.video:
+        file_obj = update.message.video
 
     if not file_obj:
-        await message.reply_text("Send me any file and I’ll give you a download link.")
+        await update.message.reply_text("Please send a valid file.")
         return
 
-    # download file
     file_id = file_obj.file_id
-    telegram_file = await context.bot.get_file(file_id)
+    file = await context.bot.get_file(file_id)
 
-    filename = file_obj.file_unique_id
-    file_path = os.path.join(UPLOAD_DIR, filename)
+    # important: Telegram stores it for at least a week
+    download_link = file.file_path
 
-    await telegram_file.download_to_drive(file_path)
-
-    # Render domain will be something like
-    # https://your-app.onrender.com
-    server_url = os.environ.get("https://file-to-link-bot-uqxp.onrender.com", "")
-
-    download_link = f"{server_url}/file/{filename}"
-
-    await message.reply_text(f"Here is your download link (valid for 7 days):\n{download_link}")
+    await update.message.reply_text(f"Here is your download link:\n\n{download_link}\n\nValid for 7+ days.")
 
 
-telegram_app.add_handler(MessageHandler(filters.ALL, handle_file))
-
-
-@app.route(f"/{BOT_USERNAME}", methods=['POST'])
+@app.route("/webhook", methods=["POST"])
 def webhook():
-    """Receive webhook updates from Telegram"""
-    data = request.get_json()
-    update = Update.de_json(data, telegram_app.bot)
-    asyncio.run(telegram_app.process_update(update))
-    return "ok"
+    update = Update.de_json(request.json, telegram_app.bot)
+    telegram_app.process_update(update)
+    return "OK", 200
 
 
-# ===========================
-#  Start Flask Server
-# ===========================
+@app.route("/", methods=["GET"])
+def home():
+    return "Telegram File Bot Running", 200
+
+
+# Set webhook when app starts on Render
+@app.before_first_request
+def setup_webhook():
+    telegram_app.bot.set_webhook(url=WEBHOOK_URL)
+
+
+# Gunicorn needs this
 if __name__ == "__main__":
-    print("Starting combined server + bot...")
-    telegram_app.bot.set_webhook(url=f"{os.environ.get('RENDER_EXTERNAL_URL')}/{BOT_USERNAME}")
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
