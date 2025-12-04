@@ -51,7 +51,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Render domain will be something like
     # https://your-app.onrender.com
-    server_url = os.environ.get("RENDER_EXTERNAL_URL", "")
+    server_url = os.environ.get("https://file-to-link-bot-uqxp.onrender.com", "")
 
     download_link = f"{server_url}/file/{filename}"
 
